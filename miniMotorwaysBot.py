@@ -2,6 +2,7 @@ import pyautogui
 import cv2
 import numpy as np
 import math
+import random
 
 #GLOBAL SETUP
 
@@ -28,7 +29,7 @@ def getScreenScaling():
 
 #BOARD DETECTION
 
-def capture_contours_after_click():
+def captureContoursAfterClick():
     #takes screenshot right after holding click to capture game window state
     sw, sh = pyautogui.size()
     pyautogui.moveTo(sw / 2, sh / 2, duration=0.5)
@@ -47,7 +48,7 @@ def findBorder():
     #getting screen scaling
     (screenW, screenH), (scaleX, scaleY) = getScreenScaling()
     #taking screenshot after click to capture game window
-    img, contours = capture_contours_after_click()
+    img, contours = captureContoursAfterClick()
     #list to track common rectangle sizes (likely cells)
     contourStats = [[1, 1, 1, 1, 0]]  # [x,y,w,h,freq]
     #iterating all contours to group cell-like rectangles
@@ -85,22 +86,22 @@ def findBorder():
     #computing board bottom-right cell
     botRight = [max(v[0] for v in valid),max(v[1] for v in valid),cellSize]
     #visualizing contours and detected board region
-    if topLeft and botRight:
-        #unpacking cell positions
-        x1, y1, ts1 = botRight
-        x2, y2, ts2 = topLeft
-        #drawing all found contours
-        cv2.drawContours(img, contours, -1, (0, 255, 0), 1)
-        #drawing rectangles around extreme cells
-        cv2.rectangle(img, (x1, y1), (x1 + ts1, y1 + ts1), (0, 0, 255), 2)
-        cv2.rectangle(img, (x2, y2), (x2 + ts2, y2 + ts2), (0, 0, 255), 2)
-        #showing result
-        cv2.imshow("Detected Board", img)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-        pyautogui.sleep(3)
-    else:
-        print("no suitable board area detected")
+    # if topLeft and botRight:
+    #     #unpacking cell positions
+    #     x1, y1, ts1 = botRight
+    #     x2, y2, ts2 = topLeft
+    #     #drawing all found contours
+    #     cv2.drawContours(img, contours, -1, (0, 255, 0), 1)
+    #     #drawing rectangles around extreme cells
+    #     cv2.rectangle(img, (x1, y1), (x1 + ts1, y1 + ts1), (0, 0, 255), 2)
+    #     cv2.rectangle(img, (x2, y2), (x2 + ts2, y2 + ts2), (0, 0, 255), 2)
+    #     #showing result
+    #     cv2.imshow("Detected Board", img)
+    #     cv2.waitKey(0)
+    #     cv2.destroyAllWindows()
+    #     pyautogui.sleep(3)
+    # else:
+    #     print("no suitable board area detected")
     #calculating full board pixel dimensions
     boardBotRight = [botRight[0] + cellSize, botRight[1] + cellSize]
     pixelW = boardBotRight[0] - topLeft[0]
@@ -117,7 +118,7 @@ def findBorder():
     print(f"adjusted cell size: {truecellSize/scaleX}")
     return (math.floor(rows), math.floor(cols), [topLeft[0] / scaleX, topLeft[1] / scaleY], truecellSize / scaleX)
 
-#cell GEOMETRY
+#CELL GEOMETRY
 
 def getcellPixelTL(boardTL, cellSize, row, col):
     #returns the top-left pixel of a cell
@@ -126,6 +127,17 @@ def getcellPixelTL(boardTL, cellSize, row, col):
 def getcellPixelCenter(cellTL, cellSize, scaleX, scaleY):
     #computes pixel center of a cell for clicking
     return [cellTL[0] + (cellSize / scaleX), cellTL[1] + (cellSize / scaleY)]
+
+def getROI(shot, boardTL, cellSize, row, col, scaleX, scaleY, ratio):
+    tl = getcellPixelTL(boardTL, cellSize, row, col)
+    fullW = cellSize * scaleX
+    fullH = cellSize * scaleY
+    w = int(fullW / ratio)
+    h = int(fullH / ratio)
+    x = int(tl[0] * scaleX + (fullW - w) / 2)
+    y = int(tl[1] * scaleY + (fullH - h) / 2)
+    roi = shot[y:y+h, x:x+w]
+    return roi
 
 #BOARD INITIALIZATION
 
@@ -154,12 +166,7 @@ def colorIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY, thresh
     for i in range(rows):
         for j in range(cols):
             #computing cell region of interest
-            tl = getcellPixelTL(boardTL, cellSize, i, j)
-            x = int(tl[0] * scaleX + cellSize * scaleX / 8)
-            y = int(tl[1] * scaleY + cellSize * scaleY / 8)
-            w = int(cellSize * scaleX * 3 / 4)
-            h = int(cellSize * scaleY * 3 / 4)
-            roi = shot[y:y+h, x:x+w]
+            roi = getROI(shot, boardTL, cellSize, i, j, scaleX, scaleY, 2)
             r, g, b = np.mean(roi, axis=(0, 1))
             matched = False
             #checking similarity with existing colors
@@ -176,7 +183,7 @@ def colorIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY, thresh
                 board[i].append(cell(i, j, len(colors) - 1, None))
     return board
 
-def typeIndexBoard(board):
+def typeIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY):
     #assigns cell types via pattern recognition
     rows, cols = len(board), len(board[0])
     colorCounts = {}
@@ -188,8 +195,8 @@ def typeIndexBoard(board):
             else:
                 colorCounts[cell.color] = 1
     for key in colorCounts:
-        #cell types making up over a quarter of cells are likely environment
-        if colorCounts[key] > rows*cols/4:
+        #cell types making up over a twentieth of cells are likely environment
+        if colorCounts[key] > rows*cols/20:
             colorCounts[key] = 'ev'
         else:
             #otherwise likely a special type, use house as placeholder
@@ -205,13 +212,67 @@ def typeIndexBoard(board):
                 TR = board[i][j+1]
                 BL = board[i+1][j]
                 BR = board[i+1][j+1]
-                if (
-                    TL.color == TR.color == BL.color == BR.color and TL.type  == TR.type  == BL.type  == BR.type  == 'hs'):
-                    TL.type = TR.type = BL.type = BR.type = 'ob'
+                #list of the 4 cells
+                block = [TL, TR, BL, BR]
+                #checking how many match color and type
+                matchCount = 0
+                for cell in block:
+                    if cell.type == 'hs' and cell.color == TL.color:
+                        matchCount += 1
+                #if at least 3/4 match the first tile then it's ob
+                if matchCount >= 3:
+                    for cell in block:
+                        cell.type = 'ob'
+                        cell.color = TL.color
+                    #searching surrounding four corners of objectives to find exit
+                    shot = getScreenshotArray()
+                    cornerStripColors = []
+                    for strip in [[(-1, -1), (0, -1), (+1, -1)], [(-1, -1), (-1, 0), (-1, +1)],
+                                  [(-1, +2), (0, +2), (+1, +2)], [(-1, +2), (-1, +1), (-1, 0)],
+                                  [(+2, -1), (+1, -1), (0, -1)], [(+2, -1), (+2, 0), (+2, +1)],
+                                  [(+2, +2), (+1, +2), (0, +2)], [(+2, +2), (+2, +1), (+2, 0)]]:
+                        #compute ACTUAL coordinates (not dr,dc because I tried that and it was super messy)
+                        cornerRow = TL.row + strip[0][0]
+                        cornerCol = TL.col + strip[0][1]
+                        cp1Row = TL.row + strip[1][0]
+                        cp1Col = TL.col + strip[1][1]
+                        cp2Row = TL.row + strip[2][0]
+                        cp2Col = TL.col + strip[2][1]
+                        #test in grid
+                        if 0 <= cornerRow < rows and 0 <= cornerCol < cols:
+                            roiCorner = getROI(shot, boardTL, cellSize, cornerRow, cornerCol, scaleX, scaleY, 3)
+                            roiCP1    = getROI(shot, boardTL, cellSize, cp1Row,    cp1Col,    scaleX, scaleY, 3)
+                            roiCP2    = getROI(shot, boardTL, cellSize, cp2Row,    cp2Col,    scaleX, scaleY, 3)
+                            #avoid empty rois
+                            if roiCorner.size == 0 or roiCP1.size == 0 or roiCP2.size == 0:
+                                continue
+                            r1, g1, b1 = np.mean(roiCorner, axis=(0, 1))
+                            r2, g2, b2 = np.mean(roiCP1, axis=(0, 1))
+                            r3, g3, b3 = np.mean(roiCP2, axis=(0, 1))
+                            cornerStripColors.append([(cornerRow, cornerCol), float(r1+r2+r3)/3, float(g1+g2+g3)/3, float(b1+b2+b3)/3])
+                            coordGroups = {}
+                    #comparing coordinate brightness to find correct corner (~50% success rate, needs optimization)
+                    for entry in cornerStripColors:
+                        coord = entry[0]
+                        rgb   = entry[1:]
+                        if coord not in coordGroups:
+                            coordGroups[coord] = []
+                        coordGroups[coord].append(rgb)
+                    coordAverages = {}
+                    for coord, rgblist in coordGroups.items():
+                        coordAverages[coord] = np.mean(rgblist, axis=0)
+                    #brightness if computed by r g and b
+                    brightness = {coord: float(sum(rgb)) for coord, rgb in coordAverages.items()}
+                    targetCorner = max(brightness, key=brightness.get)
+                    targetCell = board[targetCorner[0]][targetCorner[1]]
+                    #reassigning target cell to 'carpark' and it's objective's color
+                    targetCell.type = 'cp'
+                    targetCell.color = cell.color
     return board
 
 def printBoard(board):
     #printing board cell 
+    print('COMPUTER VISUALIZATION')
     for row in board:
         print([f'{cell.color}{cell.type[0]}' for cell in row])
     return board
@@ -221,7 +282,6 @@ def printBoard(board):
 def clearAllRoads(boardTL, rows, cols, cellSize, scaleX, scaleY):
     #clears every cell by right-click dragging over whole board
     pyautogui.PAUSE = 0
-    pyautogui.FAILSAFE = False
     coords = [(i, j) for i in range(rows) for j in range(cols)]
     first = coords[0]
     #starting at first cell
@@ -240,36 +300,49 @@ def clearAllRoads(boardTL, rows, cols, cellSize, scaleX, scaleY):
 def placeRoads(boardTL, coordListList, cellSize, scaleX, scaleY):
     #places roads by dragging across provided cell list
     pyautogui.PAUSE = 0
-    pyautogui.FAILSAFE = False
     for coordList in coordListList:
         first = coordList[0]
         tl = getcellPixelTL(boardTL, cellSize, first[0], first[1])
         center = getcellPixelCenter(tl, cellSize, scaleX, scaleY)
         #starting drag at first cell without placing
         pyautogui.moveTo(*center)
+        pyautogui.sleep(0.25)
         pyautogui.mouseDown()
         #dragging to each cell in list in a straight line
         for r, c in coordList:
             tl = getcellPixelTL(boardTL, cellSize, r, c)
             center = getcellPixelCenter(tl, cellSize, scaleX, scaleY)
             pyautogui.moveTo(*center)
-    pyautogui.mouseUp()
+        pyautogui.mouseUp()
     pyautogui.PAUSE = 1
 
-#PATHFINDING
+# PATHFINDING
 
 def findOptimalPaths(board):
     moveLists = []
     houseCoordList = []
     rows, cols = len(board), len(board[0])
+    #coords of houses
     for i in range(rows):
         for j in range(cols):
             if board[i][j].type == 'hs':
                 houseCoordList.append((i, j, board[i][j].color))
+    #run pathFind for each house
     for houseCoord in houseCoordList:
-        path = pathFind(board, [[houseCoord[0], houseCoord[1]]], houseCoord[2], set())
-        if path != None:
-            moveLists.append(path)
+        shortestPath = None
+        #calculating 100 different paths
+        for count in range(100):
+            path = pathFind(board, [[houseCoord[0], houseCoord[1]]], houseCoord[2], set())
+            if path != None:
+                if shortestPath == None:
+                    shortestPath = path
+                else:
+                    #updating the shortest path
+                    if len(path) < len(shortestPath):
+                        shortestPath = path
+        #only appends the shortest path
+        if shortestPath != None:
+            moveLists.append(shortestPath)
     return moveLists
 
 def pathFind(board, moveList, color, visited):
@@ -278,18 +351,28 @@ def pathFind(board, moveList, color, visited):
     if (row, col) in visited:
         return None
     visited.add((row, col))
-    if board[row][col].type == 'ob' and board[row][col].color == color:
+    #found matching objective
+    if board[row][col].type == 'cp' and board[row][col].color == color:
         return moveList
     else:
-        for direction in ((-1, -1), (-1, 0), (-1, +1), (0, -1), (0, +1), (+1, -1), (+1, 0), (+1, +1)):
+        #explore 8 directions
+        directions = [(-1, -1), (-1, 0), (-1, +1), 
+                      (0, -1),            (0, +1), 
+                      (+1, -1), (+1, 0), (+1, +1)]
+        random.shuffle(directions)
+        for direction in directions:
             newRow, newCol = row + direction[0], col + direction[1]
+            #bounds check
             if 0 <= newRow < len(board) and 0 <= newCol < len(board[0]):
                 cell = board[newRow][newCol]
-                if cell.type == 'ob' and cell.color != color:
+                #wrong objective color -> skip
+                if cell.type == 'cp' and cell.color != color:
                     continue
-                if cell.type == 'ob' and cell.color == color:
+                #correct objective color -> done
+                if cell.type == 'cp' and cell.color == color:
                     moveList.append([newRow, newCol])
                     return moveList
+                #environment tiles -> continue recursion
                 if cell.type == 'ev':
                     moveList.append([newRow, newCol])
                     chain = pathFind(board, moveList, color, visited)
@@ -306,7 +389,7 @@ def miniMotorwaysBot():
     rows, cols, boardTL, cellSize = findBorder()
     board = initializeBoard(rows)
     colorIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY, 60) #LAST VARIABLE IS COLOR DETECTION THRESHOLD, CHANGE AS NEEDED
-    typeIndexBoard(board)
+    typeIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY)
     printBoard(board)
     paths = findOptimalPaths(board)
     placeRoads(boardTL, paths, cellSize, scaleX, scaleY)
