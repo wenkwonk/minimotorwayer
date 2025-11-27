@@ -141,7 +141,7 @@ def getROI(shot, boardTL, cellSize, row, col, scaleX, scaleY, ratio):
 
 #BOARD INITIALIZATION
 
-class cell:
+class Cell:
     #represents a single cell on the board
     def __init__(self, row, col, color, type):
         self.row = row
@@ -154,7 +154,7 @@ class cell:
 
 def initializeBoard(rows):
     #takes screenshot and initializes empty board
-    board = [[] for _ in range(rows)]
+    board = [[] for row in range(rows)]
     return board
 
 #BOARD INDEXING AND SETUP
@@ -174,13 +174,13 @@ def colorIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY, thresh
                 if (abs(c[0] - r) < threshold and 
                     abs(c[1] - g) < threshold and 
                     abs(c[2] - b) < threshold):
-                    board[i].append(cell(i, j, idx, None))
+                    board[i].append(Cell(i, j, idx, None))
                     matched = True
                     break
             #assign new color id
             if not matched:
                 colors.append([float(r), float(g), float(b)])
-                board[i].append(cell(i, j, len(colors) - 1, None))
+                board[i].append(Cell(i, j, len(colors) - 1, None))
     return board
 
 def typeIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY):
@@ -195,8 +195,8 @@ def typeIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY):
             else:
                 colorCounts[cell.color] = 1
     for key in colorCounts:
-        #cell types making up over a twentieth of cells are likely environment
-        if colorCounts[key] > rows*cols/20:
+        #cell types making up over a fifteenth of cells are likely environment
+        if colorCounts[key] > rows*cols/15:
             colorCounts[key] = 'ev'
         else:
             #otherwise likely a special type, use house as placeholder
@@ -251,7 +251,7 @@ def typeIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY):
                             r3, g3, b3 = np.mean(roiCP2, axis=(0, 1))
                             cornerStripColors.append([(cornerRow, cornerCol), float(r1+r2+r3)/3, float(g1+g2+g3)/3, float(b1+b2+b3)/3])
                             coordGroups = {}
-                    #comparing coordinate brightness to find correct corner (~50% success rate, needs optimization)
+                    #comparing coordinate brightness to find correct corner (~75% success rate, needs optimization)
                     for entry in cornerStripColors:
                         coord = entry[0]
                         rgb   = entry[1:]
@@ -265,9 +265,18 @@ def typeIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY):
                     brightness = {coord: float(sum(rgb)) for coord, rgb in coordAverages.items()}
                     targetCorner = max(brightness, key=brightness.get)
                     targetCell = board[targetCorner[0]][targetCorner[1]]
-                    #reassigning target cell to 'carpark' and it's objective's color
-                    targetCell.type = 'cp'
+                    for surrounding in ((-1, -1), (-1, 0), (-1, +1), (-1, +2),
+                                       (0, -1),                      (0, +2),
+                                       (+1, -1),                    (+1, +2),
+                                       (+2, -1), (+2, 0), (+2, +1), (+2, +2)):
+                        carpark = board[i + surrounding[0]][j + surrounding[1]]
+                        if carpark.type == 'ev':
+                            carpark.type = 'cp'
+                            carpark.color = cell.color
+                    #reassigning target cell to 'target' and it's objective's color
+                    targetCell.type = 'ta'
                     targetCell.color = cell.color
+
     return board
 
 def printBoard(board):
@@ -277,6 +286,71 @@ def printBoard(board):
         print([f'{cell.color}{cell.type[0]}' for cell in row])
     return board
 
+# PATHFINDING
+
+def findOptimalPaths(board):
+    moveLists = []
+    houseCoordList = []
+    rows, cols = len(board), len(board[0])
+    #coords of houses
+    for i in range(rows):
+        for j in range(cols):
+            if board[i][j].type == 'hs':
+                houseCoordList.append((i, j, board[i][j].color))
+    #run pathFind for each house
+    for houseCoord in houseCoordList:
+        shortestPath = None
+        #calculating 200 different paths
+        for count in range(200):
+            path = pathFind(board, [[houseCoord[0], houseCoord[1]]], houseCoord[2], set())
+            if path != None:
+                if shortestPath == None:
+                    shortestPath = path
+                else:
+                    #updating the shortest path
+                    if len(path) < len(shortestPath):
+                        shortestPath = path
+        #only appends the shortest path
+        if shortestPath != None:
+            moveLists.append(shortestPath)
+    return moveLists
+
+def pathFind(board, moveList, color, visited):
+    row, col = moveList[-1][0], moveList[-1][1]
+    #cycle prevention
+    if (row, col) in visited:
+        return None
+    visited.add((row, col))
+    #found matching objective
+    if board[row][col].type == 'ta' and board[row][col].color == color:
+        return moveList
+    else:
+        #explore 8 directions
+        directions = [(-1, -1), (-1, 0), (-1, +1), 
+                      (0, -1),            (0, +1), 
+                      (+1, -1), (+1, 0), (+1, +1)]
+        random.shuffle(directions)
+        for direction in directions:
+            newRow, newCol = row + direction[0], col + direction[1]
+            #bounds check
+            if 0 <= newRow < len(board) and 0 <= newCol < len(board[0]):
+                cell = board[newRow][newCol]
+                #wrong objective color -> skip
+                if cell.type == 'ta' and cell.color != color:
+                    continue
+                #correct objective color -> done
+                if cell.type == 'ta' and cell.color == color:
+                    moveList.append([newRow, newCol])
+                    return moveList
+                #environment tiles -> continue recursion
+                if cell.type == 'ev':
+                    moveList.append([newRow, newCol])
+                    chain = pathFind(board, moveList, color, visited)
+                    if chain is not None:
+                        return chain
+                    moveList.pop()
+        return None
+    
 #MOUSE ACTIONS
 
 def clearAllRoads(boardTL, rows, cols, cellSize, scaleX, scaleY):
@@ -314,72 +388,8 @@ def placeRoads(boardTL, coordListList, cellSize, scaleX, scaleY):
             center = getcellPixelCenter(tl, cellSize, scaleX, scaleY)
             pyautogui.moveTo(*center)
         pyautogui.mouseUp()
+        pyautogui.sleep(0.25)
     pyautogui.PAUSE = 1
-
-# PATHFINDING
-
-def findOptimalPaths(board):
-    moveLists = []
-    houseCoordList = []
-    rows, cols = len(board), len(board[0])
-    #coords of houses
-    for i in range(rows):
-        for j in range(cols):
-            if board[i][j].type == 'hs':
-                houseCoordList.append((i, j, board[i][j].color))
-    #run pathFind for each house
-    for houseCoord in houseCoordList:
-        shortestPath = None
-        #calculating 100 different paths
-        for count in range(100):
-            path = pathFind(board, [[houseCoord[0], houseCoord[1]]], houseCoord[2], set())
-            if path != None:
-                if shortestPath == None:
-                    shortestPath = path
-                else:
-                    #updating the shortest path
-                    if len(path) < len(shortestPath):
-                        shortestPath = path
-        #only appends the shortest path
-        if shortestPath != None:
-            moveLists.append(shortestPath)
-    return moveLists
-
-def pathFind(board, moveList, color, visited):
-    row, col = moveList[-1][0], moveList[-1][1]
-    #cycle prevention
-    if (row, col) in visited:
-        return None
-    visited.add((row, col))
-    #found matching objective
-    if board[row][col].type == 'cp' and board[row][col].color == color:
-        return moveList
-    else:
-        #explore 8 directions
-        directions = [(-1, -1), (-1, 0), (-1, +1), 
-                      (0, -1),            (0, +1), 
-                      (+1, -1), (+1, 0), (+1, +1)]
-        random.shuffle(directions)
-        for direction in directions:
-            newRow, newCol = row + direction[0], col + direction[1]
-            #bounds check
-            if 0 <= newRow < len(board) and 0 <= newCol < len(board[0]):
-                cell = board[newRow][newCol]
-                #wrong objective color -> skip
-                if cell.type == 'cp' and cell.color != color:
-                    continue
-                #correct objective color -> done
-                if cell.type == 'cp' and cell.color == color:
-                    moveList.append([newRow, newCol])
-                    return moveList
-                #environment tiles -> continue recursion
-                if cell.type == 'ev':
-                    moveList.append([newRow, newCol])
-                    chain = pathFind(board, moveList, color, visited)
-                    if chain is not None:
-                        return chain
-                    moveList.pop()
-        return None
 
 #MAIN BOT
 
@@ -388,7 +398,7 @@ def miniMotorwaysBot():
     (screenW, screenH), (scaleX, scaleY) = getScreenScaling()
     rows, cols, boardTL, cellSize = findBorder()
     board = initializeBoard(rows)
-    colorIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY, 60) #LAST VARIABLE IS COLOR DETECTION THRESHOLD, CHANGE AS NEEDED
+    colorIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY, 55) #LAST VARIABLE IS COLOR DETECTION THRESHOLD, CHANGE AS NEEDED
     typeIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY)
     printBoard(board)
     paths = findOptimalPaths(board)
