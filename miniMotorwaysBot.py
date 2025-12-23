@@ -2,7 +2,7 @@ import pyautogui
 import cv2
 import numpy as np
 import math
-import random
+import heapq
 
 #GLOBAL SETUP
 
@@ -187,96 +187,101 @@ def typeIndexBoard(board, boardTL, rows, cols, cellSize, scaleX, scaleY):
     #assigns cell types via pattern recognition
     rows, cols = len(board), len(board[0])
     colorCounts = {}
-    #dictionary to count color frequencies
+    #count frequencies of each color id
     for cellRow in board:
         for cell in cellRow:
-            if cell.color in colorCounts:
-                colorCounts[cell.color] += 1
-            else:
-                colorCounts[cell.color] = 1
-    for key in colorCounts:
-        #cell types making up over a fifteenth of cells are likely environment
-        if colorCounts[key] > rows*cols/15:
+            colorCounts[cell.color] = colorCounts.get(cell.color, 0) + 1
+    #mark common colors as environment
+    for key in list(colorCounts.keys()):
+        if colorCounts[key] > rows * cols / 15:
             colorCounts[key] = 'ev'
         else:
-            #otherwise likely a special type, use house as placeholder
             colorCounts[key] = 'hs'
+    #assign types
     for cellRow in board:
         for cell in cellRow:
             cell.type = colorCounts[cell.color]
-    #groups of houses are classified into objectives
-    for i, row in enumerate(board):
-        for j, cell in enumerate(row):
-            if i + 1 < rows and j + 1 < cols:
-                TL = board[i][j]
-                TR = board[i][j+1]
-                BL = board[i+1][j]
-                BR = board[i+1][j+1]
-                #list of the 4 cells
-                block = [TL, TR, BL, BR]
-                #checking how many match color and type
-                matchCount = 0
-                for cell in block:
-                    if cell.type == 'hs' and cell.color == TL.color:
-                        matchCount += 1
-                #if at least 3/4 match the first tile then it's ob
-                if matchCount >= 3:
-                    for cell in block:
-                        cell.type = 'ob'
-                        cell.color = TL.color
-                    #searching surrounding four corners of objectives to find exit
-                    shot = getScreenshotArray()
-                    cornerStripColors = []
-                    for strip in [[(-1, -1), (0, -1), (+1, -1)], [(-1, -1), (-1, 0), (-1, +1)],
-                                  [(-1, +2), (0, +2), (+1, +2)], [(-1, +2), (-1, +1), (-1, 0)],
-                                  [(+2, -1), (+1, -1), (0, -1)], [(+2, -1), (+2, 0), (+2, +1)],
-                                  [(+2, +2), (+1, +2), (0, +2)], [(+2, +2), (+2, +1), (+2, 0)]]:
-                        #compute ACTUAL coordinates (not dr,dc because I tried that and it was super messy)
+    shot = getScreenshotArray()
+    #groups of houses are classified into objectives using a 3/4 majority rule
+    for i in range(rows - 1):
+        for j in range(cols - 1):
+            TL = board[i][j]
+            TR = board[i][j + 1]
+            BL = board[i + 1][j]
+            BR = board[i + 1][j + 1]
+            block = [TL, TR, BL, BR]
+            #count colors among house tiles only
+            freq = {}
+            for c in block:
+                if c.type == 'hs':
+                    freq[c.color] = freq.get(c.color, 0) + 1
+            #find a majority color if exists
+            majorityColor = None
+            for colorID, count in freq.items():
+                if count >= 3:
+                    majorityColor = colorID
+                    break
+            #if majority found mark block as objective
+            if majorityColor is not None:
+                for c in block:
+                    c.type = 'ob'
+                    c.color = majorityColor
+                #finding exit corner
+                cornerStripColors = []
+                #all possible locations of carpark + exit
+                strips = [[(-1, -1), (0, -1), (+1, -1)],
+                          [(-1, -1), (-1, 0), (-1, +1)],
+                          [(-1, +2), (0, +2), (+1, +2)],
+                          [(-1, +2), (-1, +1), (-1, 0)],
+                          [(+2, -1), (+1, -1), (0, -1)],
+                          [(+2, -1), (+2, 0), (+2, +1)],
+                          [(+2, +2), (+1, +2), (0, +2)],
+                          [(+2, +2), (+2, +1), (+2, 0)],]
+                for strip in strips:
+                    cornerRow = TL.row + strip[0][0]
+                    cornerCol = TL.col + strip[0][1]
+                    cp1Row = TL.row + strip[1][0]
+                    cp1Col = TL.col + strip[1][1]
+                    cp2Row = TL.row + strip[2][0]
+                    cp2Col = TL.col + strip[2][1]
+                    if not (0 <= cornerRow < rows and 0 <= cornerCol < cols
+                            and 0 <= cp1Row < rows and 0 <= cp1Col < cols
+                            and 0 <= cp2Row < rows and 0 <= cp2Col < cols):
+                        continue
+                    roiCorner = getROI(shot, boardTL, cellSize, cornerRow, cornerCol, scaleX, scaleY, 3)
+                    roiCP1 = getROI(shot, boardTL, cellSize, cp1Row, cp1Col, scaleX, scaleY, 3)
+                    roiCP2 = getROI(shot, boardTL, cellSize, cp2Row, cp2Col, scaleX, scaleY, 3)
+                    #skip empty ROIs
+                    if roiCorner.size == 0 or roiCP1.size == 0 or roiCP2.size == 0:
+                        continue
+                    r1, g1, b1 = np.mean(roiCorner, axis=(0, 1))
+                    r2, g2, b2 = np.mean(roiCP1, axis=(0, 1))
+                    r3, g3, b3 = np.mean(roiCP2, axis=(0, 1))
+                    avgRGB = ((r1 + r2 + r3) / 3.0, (g1 + g2 + g3) / 3.0, (b1 + b2 + b3) / 3.0)
+                    cornerStripColors.append(((cornerRow, cornerCol), avgRGB))
+                #pick the brightest
+                if cornerStripColors:
+                    coordAverages = {coord: np.array(rgb) for (coord, rgb) in cornerStripColors}
+                    brightness = {coord: float(rgb.sum()) for coord, rgb in coordAverages.items()}
+                    targetCorner = max(brightness, key=brightness.get)
+                    #assign the target cell and its two carparks
+                    targetCell = board[targetCorner[0]][targetCorner[1]]
+                    targetCell.type = 'ta'
+                    targetCell.color = majorityColor
+                    #find the matching strip to get carpark coords
+                    for strip in strips:
                         cornerRow = TL.row + strip[0][0]
                         cornerCol = TL.col + strip[0][1]
-                        cp1Row = TL.row + strip[1][0]
-                        cp1Col = TL.col + strip[1][1]
-                        cp2Row = TL.row + strip[2][0]
-                        cp2Col = TL.col + strip[2][1]
-                        #test in grid
-                        if 0 <= cornerRow < rows and 0 <= cornerCol < cols:
-                            roiCorner = getROI(shot, boardTL, cellSize, cornerRow, cornerCol, scaleX, scaleY, 3)
-                            roiCP1    = getROI(shot, boardTL, cellSize, cp1Row,    cp1Col,    scaleX, scaleY, 3)
-                            roiCP2    = getROI(shot, boardTL, cellSize, cp2Row,    cp2Col,    scaleX, scaleY, 3)
-                            #avoid empty rois
-                            if roiCorner.size == 0 or roiCP1.size == 0 or roiCP2.size == 0:
-                                continue
-                            r1, g1, b1 = np.mean(roiCorner, axis=(0, 1))
-                            r2, g2, b2 = np.mean(roiCP1, axis=(0, 1))
-                            r3, g3, b3 = np.mean(roiCP2, axis=(0, 1))
-                            cornerStripColors.append([(cornerRow, cornerCol), float(r1+r2+r3)/3, float(g1+g2+g3)/3, float(b1+b2+b3)/3])
-                            coordGroups = {}
-                    #comparing coordinate brightness to find correct corner (~75% success rate, needs optimization)
-                    for entry in cornerStripColors:
-                        coord = entry[0]
-                        rgb   = entry[1:]
-                        if coord not in coordGroups:
-                            coordGroups[coord] = []
-                        coordGroups[coord].append(rgb)
-                    coordAverages = {}
-                    for coord, rgblist in coordGroups.items():
-                        coordAverages[coord] = np.mean(rgblist, axis=0)
-                    #brightness if computed by r g and b
-                    brightness = {coord: float(sum(rgb)) for coord, rgb in coordAverages.items()}
-                    targetCorner = max(brightness, key=brightness.get)
-                    targetCell = board[targetCorner[0]][targetCorner[1]]
-                    for surrounding in ((-1, -1), (-1, 0), (-1, +1), (-1, +2),
-                                       (0, -1),                      (0, +2),
-                                       (+1, -1),                    (+1, +2),
-                                       (+2, -1), (+2, 0), (+2, +1), (+2, +2)):
-                        carpark = board[i + surrounding[0]][j + surrounding[1]]
-                        if carpark.type == 'ev':
-                            carpark.type = 'cp'
-                            carpark.color = cell.color
-                    #reassigning target cell to 'target' and it's objective's color
-                    targetCell.type = 'ta'
-                    targetCell.color = cell.color
-
+                        if (cornerRow, cornerCol) == targetCorner:
+                            cp1Row = TL.row + strip[1][0]; cp1Col = TL.col + strip[1][1]
+                            cp2Row = TL.row + strip[2][0]; cp2Col = TL.col + strip[2][1]
+                            if 0 <= cp1Row < rows and 0 <= cp1Col < cols:
+                                board[cp1Row][cp1Col].type = 'cp'
+                                board[cp1Row][cp1Col].color = majorityColor
+                            if 0 <= cp2Row < rows and 0 <= cp2Col < cols:
+                                board[cp2Row][cp2Col].type = 'cp'
+                                board[cp2Row][cp2Col].color = majorityColor
+                            break
     return board
 
 def printBoard(board):
@@ -288,68 +293,84 @@ def printBoard(board):
 
 # PATHFINDING
 
-def findOptimalPaths(board):
-    moveLists = []
-    houseCoordList = []
+def heuristic(a, b):
+    #cell distances
+    dx = abs(a[0] - b[0])
+    dy = abs(a[1] - b[1])
+    return dx + dy + (1.414 - 2) * min(dx, dy)
+
+def astar(board, start, goal, color):
     rows, cols = len(board), len(board[0])
-    #coords of houses
+    startRow, startCol = start
+    goalRow, goalCol = goal
+    pq = []
+    heapq.heappush(pq, (0, 0, (startRow, startCol), [(startRow, startCol)]))
+    goalCost = {(startRow, startCol): 0}
+    directions = [(-1, -1), (-1, 0), (-1, +1),
+                  (0, -1),            (0, +1),
+                  (+1, -1), (+1, 0), (+1, +1)]
+    while pq:
+        f, g, (row, col), path = heapq.heappop(pq)
+        if (row, col) == (goalRow, goalCol):
+            return path
+        for dr, dc in directions:
+            newRow, newCol = row + dr, col + dc
+            if 0 <= newRow < rows and 0 <= newCol < cols:
+                cell = board[newRow][newCol]
+                #allow stepping on the goal (ta with matching color)
+                if (newRow, newCol) == (goalRow, goalCol):
+                    pass
+                #allow staying on start only at the beginning
+                elif cell.type == "hs":
+                    if (newRow, newCol) != (startRow, startCol):
+                        continue  #cant walk through any other house
+                #allow walking only on ev tiles
+                elif cell.type != "ev":
+                    continue
+                #block wrong colored objective tiles
+                if cell.type == "ta" and (newRow, newCol) != (goalRow, goalCol) and cell.color != color:
+                    continue
+                #compute step cost
+                if dr != 0 and dc != 0:
+                    #diagonal
+                    stepCost = 1.414
+                else:
+                    stepCost = 1
+                newGoal = g + stepCost
+                if (newRow, newCol) not in goalCost or newGoal < goalCost[(newRow, newCol)]:
+                    goalCost[(newRow, newCol)] = newGoal
+                    h = heuristic((newRow, newCol), (goalRow, goalCol))
+                    heapq.heappush(pq, (newGoal + h, newGoal, (newRow, newCol), path + [(newRow, newCol)]))
+    return None
+
+def findOptimalPaths(board):
+    moves = []
+    rows, cols = len(board), len(board[0])
+    #locate houses
+    houses = []
     for i in range(rows):
         for j in range(cols):
-            if board[i][j].type == 'hs':
-                houseCoordList.append((i, j, board[i][j].color))
-    #run pathFind for each house
-    for houseCoord in houseCoordList:
-        shortestPath = None
-        #calculating 200 different paths
-        for count in range(200):
-            path = pathFind(board, [[houseCoord[0], houseCoord[1]]], houseCoord[2], set())
-            if path != None:
-                if shortestPath == None:
-                    shortestPath = path
-                else:
-                    #updating the shortest path
-                    if len(path) < len(shortestPath):
-                        shortestPath = path
-        #only appends the shortest path
-        if shortestPath != None:
-            moveLists.append(shortestPath)
-    return moveLists
-
-def pathFind(board, moveList, color, visited):
-    row, col = moveList[-1][0], moveList[-1][1]
-    #cycle prevention
-    if (row, col) in visited:
-        return None
-    visited.add((row, col))
-    #found matching objective
-    if board[row][col].type == 'ta' and board[row][col].color == color:
-        return moveList
-    else:
-        #explore 8 directions
-        directions = [(-1, -1), (-1, 0), (-1, +1), 
-                      (0, -1),            (0, +1), 
-                      (+1, -1), (+1, 0), (+1, +1)]
-        random.shuffle(directions)
-        for direction in directions:
-            newRow, newCol = row + direction[0], col + direction[1]
-            #bounds check
-            if 0 <= newRow < len(board) and 0 <= newCol < len(board[0]):
-                cell = board[newRow][newCol]
-                #wrong objective color -> skip
-                if cell.type == 'ta' and cell.color != color:
-                    continue
-                #correct objective color -> done
-                if cell.type == 'ta' and cell.color == color:
-                    moveList.append([newRow, newCol])
-                    return moveList
-                #environment tiles -> continue recursion
-                if cell.type == 'ev':
-                    moveList.append([newRow, newCol])
-                    chain = pathFind(board, moveList, color, visited)
-                    if chain is not None:
-                        return chain
-                    moveList.pop()
-        return None
+            if board[i][j].type == "hs":
+                houses.append((i, j, board[i][j].color))
+    #locate targets by color
+    targets = {}
+    for i in range(rows):
+        for j in range(cols):
+            if board[i][j].type == "ta":
+                tcolor = board[i][j].color
+                targets[tcolor] = (i, j)
+    #run A*
+    for hr, hc, color in houses:
+        if color not in targets:
+            print(f"No target for color {color}, skipping.")
+            continue
+        goal = targets[color]
+        path = astar(board, (hr, hc), goal, color)
+        if path:
+            moves.append([[r, c] for (r, c) in path])
+        else:
+            print(f"No path found for house at {hr},{hc}")
+    return moves
     
 #MOUSE ACTIONS
 
