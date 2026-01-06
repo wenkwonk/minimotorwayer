@@ -1,2 +1,23 @@
-# minimotorwayer
-A Python-based automation bot for the strategy game Mini Motorways, using recursive reasoning and computer-vision techniques. Built as a personal project to apply and strengthen my skills in Python, data handling, and algorithmic problem-solving.
+# MiniMotorwayer: Mini Motorways Automation Bot
+
+A Python-based computer vision pipeline that automates gameplay in *Mini Motorways* using real-time screen analysis and pathfinding algorithms. The system captures screen data, interprets game state via OpenCV, and executes optimal road placements using a custom A* implementation. Created as a personal project to explore computer vision, automation, and algorithm design.
+
+## Features
+- OpenCV-based screen capture
+- A* pathfinding algorithm
+- Modular, extensible architecture
+
+## Features To Be Added
+- CNN computer vision
+- D* pathfinding algorithm
+- Fully autonomous gameplay
+
+## Installation
+```bash
+### Clone the repository
+git clone https://github.com/wenkwonk/minimotorwayer.git
+cd minimotorwayer
+
+### Install dependencies
+pip install -r requirements.txt
+```
